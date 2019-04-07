@@ -1,0 +1,886 @@
+---
+author: "Josh Pause"
+date: "April 6, 2019"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+urlcolor: blue  
+---
+
+```{r echo=FALSE}
+# load all of the packages used in this article
+library(pacman)
+p_load(dplyr, ggplot2, gridExtra, knitr, scales, sentimentr, stringi, tidyverse, tidytext, wordcloud)
+```
+
+# Sentiment Analysis with Trump Tweets
+<div class="date">April 7th, 2019</div>
+<div class="author">Josh Pause, Machine Learning Engineer, DataJenius</div>
+
+
+## Introduction
+
+In this article we will be using R, including the tidytext and sentimentr packages, to do some natural language processing and sentiment analysis of Trump's tweets. All of the code and data used in the creation of this article is available via our Github depository.
+
+
+## Our Data
+
+We took the last year of Trump's tweets from the [Trump Twitter Archive](http://trumptwitterarchive.com/), from April 6th, 2018 through the evening of April 5th, 2019. This data includes 3,089 total tweets; we looked at original tweets only, and ignored his retweets. 
+
+It goes without saying that we encounter all sorts of strange characters on Twitter. More specifically, we encounter emojis, foreign languages, and lots of UTF-8 characters that can choke a standard NLP preprocessor. Most of these NLP systems are designed to work with ASCII content, which is limitted to standard English letters, numbers, and punctuation found on a standard American keyboard. When these systems encounter UTF-8 this can result in garbled punctuation appearing in your text, or a system failing to tokenize or lemmatize properly. To avoid this, we converted all tweet text to ASCII. I will refer you to [Apil Tamong's article on the subject](https://medium.com/@apiltamang/unicode-utf-8-and-ascii-encodings-made-easy-5bfbe3a1c45a) for more information regarding UTF-8 versus ASCII. 
+
+It is also important to note that the "created_at" timestamp provided by Twitter is set in UTC time. Since Trump spends most of his time in New York, Washington D.C. and Florida, we converted all dates and times to the Eastern timezone instead. 
+
+```{r echo=FALSE, results='hide'}
+# load our tweets from UTF-8 encoded CSV file (allows emojis)
+tweets <- read.csv2(file("trump_tweets_04062018-04062019.csv", encoding="UTF-8"),
+                    header=TRUE,
+                    sep=",",
+                    stringsAsFactors = FALSE)
+
+# confirm our data is UTF-8
+all(stri_enc_isutf8(tweets$text))
+Encoding(tweets$text) <- "UTF-8"
+
+# convert to ASCII
+tweets$text <- stri_trans_general(tweets$text, "ASCII")
+tweets$text <- iconv(tweets$text, "UTF-8", "ASCII", sub=" ")
+all(stri_enc_isascii(tweets$text))
+
+# extract and format our desired features
+tweets$created_at <- as.POSIXct(tweets$created_at,format="%m-%d-%Y %H:%M", tz="GMT")
+tweets$created_at <- as.POSIXlt(tweets$created_at ,tz="America/New_York")
+tweets$week <- format(tweets$created_at,"%W %Y")
+tweets$week <- factor(tweets$week, levels=rev(unique(tweets$week)))
+tweets$day <- format(tweets$created_at,"%a, %b %d, %Y")
+tweets$day <- factor(tweets$day, levels=rev(unique(tweets$day)))
+tweets$hour <- as.numeric(tweets$created_at$hour)
+tweets$id_str <- trimws(format(tweets$id_str, scientific=FALSE))
+
+
+# remove tweet 999710267096354816 because it is oddly long
+tweets <- subset(tweets, id_str!="999710267096354816")
+
+# remove escaped quotes
+tweets$text <- gsub('\"', "", tweets$text, fixed = TRUE)
+tweets$text <- gsub('&amp;', "&", tweets$text, fixed = TRUE)
+```
+
+
+## Psychoanalyzing the President
+
+Given nothing but these 3,089 tweets, what can we infer about President Trump?
+
+```{r echo=FALSE}
+tweets %>%
+  group_by(hour) %>%
+  count() %>%
+  ggplot(aes(x=hour, y=n, fill=n)) +
+    geom_bar(stat="identity") +
+    labs(y="Number of Tweets",x="Time of Day (24 hours)", subtitle="Number of Tweets versus Time of Day") +
+    ggtitle("When does Trump tweet?") +
+    scale_fill_gradient(low = "#2e5984", high = "#132B43") +
+    theme(legend.position = "none") +
+    geom_vline(xintercept = 0, linetype="dashed", color="red") +
+    annotate("text", x = 0.3, y = 200, label = "12:00am", color="red", size=3, angle=90) +
+    geom_vline(xintercept = 6, linetype="dashed", color="red") +
+    annotate("text", x = 6.3, y = 200, label = "6:00am", color="red", size=3, angle=90) +
+    geom_vline(xintercept = 11, linetype="dashed", color="red") +
+    annotate("text", x =11.3, y = 200, label = "11:00am", color="red", size=3, angle=90) +
+    geom_vline(xintercept = 14, linetype="dashed", color="red") +
+    annotate("text", x =14.3, y = 200, label = "2:00pm", color="red", size=3, angle=90) +
+    geom_vline(xintercept = 18, linetype="dashed", color="red") +
+    annotate("text", x =18.3, y = 200, label = "6:00pm", color="red", size=3, angle=90) +
+    geom_vline(xintercept = 22, linetype="dashed", color="red") +
+    annotate("text", x =22.3, y = 200, label = "10:00pm", color="red", size=3, angle=90)  
+```
+
+Looking at the above plot we can immediately get a feel for the President's routine. He appears to wake up around 6:00am, and posts the majority of his tweets in the morning. Starting around 11:00am (lunch time for Trump?) he spends less time tweeting, but remains fairly active through the evening. By midnight he is usually done with Twitter for the day. 
+
+```{r echo=FALSE, results='hide'}
+nrow(subset(tweets, source=='Twitter for iPhone', select=c("source")))/nrow(tweets)
+```
+
+The gross majority of these tweets (more than 98%) were posted using "Twitter for iPhone". This is not to say all of these tweets are actually written by Trump himself. It is quite possible there are social media or public relations staff handling some of these posts, but if they are, they are also using iPhones to do it most of the time. 
+
+There is an incredible amount of variance in the amount of retweets a given post by Trump receives. The least popular tweet in our data got a mere 6 retweets: 
+
+```{r echo=FALSE}
+tweet <- tweets[which(tweets$retweet_count==min(tweets$retweet_count)),]
+print(tweet$text)
+```
+
+The most popular was retweeted 108,798 times:
+
+```{r echo=FALSE}
+tweet <- tweets[which(tweets$retweet_count==max(tweets$retweet_count)),]
+print(tweet$text)
+```
+
+The number of retweets Trump gets appears almost bimodal, with a long right tail containing popular outlier tweets (like the one above).
+
+```{r echo=FALSE}
+tweets %>%
+  ggplot(aes(x=retweet_count)) +
+    geom_histogram(binwidth=1000, color="blue") +
+    labs(y="Number of Tweets",x="Number of Retweets", subtitle="Histogram of Retweets") +
+    ggtitle("How many retweets does Trump get?") +
+    theme(legend.position = "none") +
+    scale_x_continuous(label=comma)
+```
+
+We don't have time to read through all of these tweets manually, but that is where the real "meat and potatoes" of this data is hiding. How can we use natural language processing, and more specifically, sentiment analysis, to dig deeper?
+
+## The NRC Lexicon
+
+The [tidytext package](https://cran.r-project.org/web/packages/tidytext/index.html) in R comes with a series of sentiment lexicons. The [NRC lexicon](https://saifmohammad.com/WebPages/NRC-Emotion-Lexicon.htm) is one of these:
+
+```{r echo=FALSE}
+nrc <- get_sentiments('nrc')
+kable(head(nrc))
+```
+
+Words are categorized as "positive" and "negative", but also into 8 additional emotional categories, ranging from "anger" to "joy" to "sadness".
+
+```{r echo=FALSE}
+table(nrc$sentiment)
+```
+
+It is also important to note that some words, including one of Trump's favorites, are attached to several sentiments: 
+
+```{r echo=FALSE}
+kable(subset(nrc,word=='deal'))
+```
+
+If we tokenize these tweets (split them up into words) and compare them to the NRC sentiment dictionary, we can count how many matching words appear in each tweet. 
+
+```{r include=FALSE}
+tweets.nrc <- tweets %>%
+  select(id_str, day, hour, text) %>%
+  # tokenize by word and join nrc lexicon
+  unnest_tokens(word, text) %>%
+  inner_join(nrc)  %>%
+  # ignore positive and negative sentiment
+  filter(sentiment!='positive') %>%
+  filter(sentiment!='negative') %>%
+  # create dummy variables for each emotion
+  mutate(sent_anger=ifelse(sentiment=='anger',1,0)) %>%
+  mutate(sent_anticipation=ifelse(sentiment=='anticipation',1,0)) %>%  
+  mutate(sent_disgust=ifelse(sentiment=='disgust',1,0)) %>%  
+  mutate(sent_fear=ifelse(sentiment=='fear',1,0)) %>%
+  mutate(sent_joy=ifelse(sentiment=='joy',1,0)) %>%
+  mutate(sent_sadness=ifelse(sentiment=='sadness',1,0)) %>%
+  mutate(sent_surprise=ifelse(sentiment=='surprise',1,0)) %>%  
+  mutate(sent_trust=ifelse(sentiment=='trust',1,0)) %>%
+  # group by tweet and sum sentiments
+  group_by(id_str) %>%
+  summarize(sent_anger=sum(sent_anger),
+            sent_anticipation=sum(sent_anticipation),
+            sent_disgust=sum(sent_disgust),
+            sent_fear=sum(sent_fear),
+            sent_joy=sum(sent_joy),
+            sent_sadness=sum(sent_sadness),
+            sent_surprise=sum(sent_surprise),
+            sent_trust=sum(sent_trust))
+  # merge back the other features we care about
+  tweets.nrc <- merge(tweets.nrc, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str") 
+```
+
+
+This allows us to view the tweet with the most "anger" words: 
+
+```{r echo=FALSE}
+tweet <- tweets.nrc[which(tweets.nrc$sent_anger==max(tweets.nrc$sent_anger)),]
+print(tweet$text)
+```
+
+Or the tweet with the most "joy" words:
+
+```{r echo=FALSE}
+tweet <- tweets.nrc[which(tweets.nrc$sent_joy==max(tweets.nrc$sent_joy)),]
+print(tweet$text)
+```
+
+Or the tweet with the most "sadness" words:
+
+```{r echo=FALSE}
+tweet <- tweets.nrc[which(tweets.nrc$sent_sadness==max(tweets.nrc$sent_sadness)),]
+print(tweet$text)
+```
+
+Or the tweet with the most "trust" words:
+
+```{r echo=FALSE}
+tweet <- tweets.nrc[which(tweets.nrc$sent_trust==max(tweets.nrc$sent_trust)),]
+print(tweet$text)
+```
+
+If we look at the proportion of tweets that contain at least one word linked to each emotion, we find this: 
+
+```{r echo=FALSE}
+gdata <- data.frame(emotion='anger', 
+                    proportion=nrow(subset(tweets.nrc, sent_anger>0))/nrow(tweets.nrc))
+gdata <- rbind(gdata, data.frame(emotion='anticipation', 
+                                 proportion=nrow(subset(tweets.nrc, sent_anticipation>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='disgust', 
+                                 proportion=nrow(subset(tweets.nrc, sent_disgust>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='fear', 
+                                 proportion=nrow(subset(tweets.nrc, sent_fear>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='joy', 
+                                 proportion=nrow(subset(tweets.nrc, sent_joy>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='sadness', 
+                                 proportion=nrow(subset(tweets.nrc, sent_sadness>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='surprise', 
+                                 proportion=nrow(subset(tweets.nrc, sent_surprise>0))/nrow(tweets.nrc)))
+gdata <- rbind(gdata, data.frame(emotion='trust', 
+                                 proportion=nrow(subset(tweets.nrc, sent_trust>0))/nrow(tweets.nrc)))
+ggplot(gdata, aes(x=emotion, y=proportion, fill=emotion)) +
+  geom_bar(stat="identity", color="black") +
+  labs(y="Proportion of Tweets",x="Emotion (NRC Lexicon)", subtitle="Proportion of tweets that contain at least one matching word") +
+    ggtitle("What are the most common emotions in Trump's tweets?") +
+    theme(legend.position = "none") +
+    scale_y_continuous(labels = scales::percent)
+```
+
+We find that roughly 82% of Trump's tweets contain at least one word matching "trust", followed by 63% which are associated to "anticipation", followed by 57% which are associated with "fear". Only 40% of Trump's tweet contain at least one word matching to "disgust". Remember: this can be deceptive because the same word (e.g. "deal") can be associated to multiple emotional categories. 
+
+If we add up all emotional word matches, and look at the proportion of these matches in each emotional category, we can visualize Trump's changing mood over time: 
+
+
+```{r echo=FALSE}
+gdata <- tweets.nrc %>%
+  arrange(day) %>%
+  group_by(week) %>%
+  summarize(anger=sum(sent_anger),
+            anticipation=sum(sent_anticipation),
+            disgust=sum(sent_disgust),
+            fear=sum(sent_fear),
+            joy=sum(sent_joy),
+            sadness=sum(sent_sadness),
+            surprise=sum(sent_surprise),
+            trust=sum(sent_trust)) %>%
+  mutate(total=anger+anticipation+disgust+fear+joy+sadness+surprise+trust) %>%
+  mutate(anger=anger/total,
+         anticipation=anticipation/total,
+         disgust=disgust/total,
+         fear=fear/total,
+         joy=joy/total,
+         sadness=sadness/total,
+         surprise=surprise/total,
+         trust=trust/total)
+# get labels for week based on date
+weeklabel <- tweets.nrc %>% 
+  arrange(day) %>%
+  group_by(week) %>%
+  mutate(label=first(day)) %>%
+  distinct(week, label)
+# create week2 index as a numeric index (for continuous plot)
+gdata$week2 <- gdata$week
+levels(gdata$week2) <- seq(1,51,1)
+gdata$week2 <- as.numeric(gdata$week2)
+gdata <- gather(gdata, Emotion, prop, anger:trust, factor_key=TRUE)
+# plot it
+ggplot(gdata, aes(x=week2, y=prop, fill=Emotion)) +
+  geom_area(size=1, color="black") +
+   labs(y="Proportion of Words",x="Week", subtitle="Trump's tweets: emotion over time") +
+    ggtitle("What are the most common emotions in Trump's tweets over time?") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(breaks=seq(1,51,1), labels = weeklabel$label)
+```
+
+
+
+
+
+## Combining Sentiment Lexicons
+
+In addition to all these emotional categories, the NRC lexicon provides a simplified "positive" or "negative" sentiment tag for 5,636 different words. The [AFINN Lexicon](https://github.com/fnielsen/afinn/tree/master/afinn/data) provides 2,476 words with a sentiment score of -5 (worst) to 5 (best). The Bing lexicon provides 6,788 words with a sentiment tag of "positive" or "negative", as does the Loughran lexicon for 4,419 words. Many of these words appear across multiple lexicons:
+
+```{r echo=FALSE}
+# join all of our lexicons together
+lexicon <- nrc %>% filter(sentiment=='positive' | sentiment=='negative') %>% mutate(nrc=sentiment) %>% select(word, nrc)
+afinn <- get_sentiments('afinn') %>% mutate(afinn=score) %>% select(word, afinn)
+lexicon <- merge(lexicon, afinn, by="word", all=TRUE)
+bing <- get_sentiments('bing') %>% mutate(bing=sentiment) %>% select(word, bing)
+lexicon <- merge(lexicon, bing, by="word", all=TRUE)
+loughran <- get_sentiments('loughran') %>% mutate(loughran=sentiment) %>% select(word, loughran)
+lexicon <- merge(lexicon, loughran, by="word", all=TRUE)
+kable(head(lexicon))
+```
+
+We can combine the powers of these lexicons by assigning a numeric value for "positive" and "negative" sentiments across all of them. Using the AFINN (-5 to 5) as our basis, we can assign 2.5 for all "positive" sentiment, and -2.5 for all "negative" sentiment, and sum these scores up for each word.
+
+```{r include=FALSE}
+lexicon$nrc[is.na(lexicon$nrc)] <- 0
+lexicon$nrc[lexicon$nrc=='negative'] <- -2.5
+lexicon$nrc[lexicon$nrc=='positive'] <- 2.5
+lexicon$afinn[is.na(lexicon$afinn)] <- 0
+lexicon$bing[is.na(lexicon$bing)] <- 0
+lexicon$bing[lexicon$bing=='negative'] <- -2.5
+lexicon$bing[lexicon$bing=='positive'] <- 2.5
+lexicon$loughran[is.na(lexicon$loughran)] <- 0
+lexicon$loughran[lexicon$loughran=='negative'] <- -2.5
+lexicon$loughran[lexicon$loughran=='positive'] <- 2.5
+lexicon$nrc <- as.numeric(lexicon$nrc)
+lexicon$bing <- as.numeric(lexicon$bing)
+lexicon$loughran <- as.numeric(lexicon$loughran)
+lexicon <- lexicon %>% mutate(sentiment=nrc+afinn+bing+loughran)
+```
+```{r echo=FALSE}
+kable(head(lexicon))
+```
+
+Words that appear in more lexicons have a stronger influence on our final sentiment score, which reduces all emotion into a simplified "positive" or "negative" number. As before we can tokenize all tweets by word. This time we will score the sentiment of each individual word using the combined lexicon, and sum this to the net sentiment per tweet. In other words, does a given tweet have more positive or negative sentiment in it?
+
+```{r include=FALSE}
+tweets.sentiment <- tweets %>%
+  select(id_str, day, hour, text) %>%
+  # tokenize by word and join combined lexicon
+  unnest_tokens(word, text) %>%
+  inner_join(lexicon) %>%
+  # group by tweet and sum sentiments
+  group_by(id_str) %>%
+  summarize(sentiment=sum(sentiment, na.rm=TRUE))
+  # merge back the other features we care about
+  tweets.sentiment <- merge(tweets.sentiment, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str") 
+```
+
+If we ignore the long tails (the tweets with extremely negative or positive sentiment), we find an approximately normal distribition, centered around a net sentiment near 5. 
+
+```{r echo=FALSE}
+tweets.sentiment %>%
+  ggplot() +
+    geom_histogram(aes(x = sentiment, y = ..density..),
+                     binwidth = 1, fill = "blue", color = "black", alpha=0.5) +
+    geom_density(aes(x=sentiment), fill="red", alpha=0.4) +
+      labs(y="Density",x="Net Sentiment", subtitle="Distribution of net sentiment per tweet") +
+    ggtitle("Trump Tweets Sentiment") +
+    scale_y_continuous(labels = scales::percent)
+```
+
+We can now look to see what proportion of tweets in a given week were "positive" (net sentiment over 0) and "negative" (all remaining tweets), and we can visualize this change over time: 
+
+```{r echo=FALSE}
+gdata <- tweets.sentiment %>%
+  arrange(day) %>%
+  group_by(week) %>%
+  summarize(n = n(),
+            positive=sum(sentiment>0)) %>%
+  mutate(positive=positive/n) %>%
+  mutate(negative=1-positive)
+# get labels for week based on date
+weeklabel <- tweets.nrc %>% 
+  arrange(day) %>%
+  group_by(week) %>%
+  mutate(label=first(day)) %>%
+  distinct(week, label)
+# create week2 index as a numeric index (for continuous plot)
+gdata$week2 <- gdata$week
+levels(gdata$week2) <- seq(1,51,1)
+gdata$week2 <- as.numeric(gdata$week2)
+gdata <- gather(gdata, Emotion, prop, positive:negative, factor_key=TRUE)
+# plot it
+ggplot(gdata, aes(x=week2, y=prop, fill=Emotion)) +
+  geom_area(size=1, color="black") +
+   labs(y="Proportion of Tweets",x="Week", subtitle="Trump's tweets: proportion of positive sentiment over time") +
+    ggtitle("What proportion of Trump tweets are positive over time?") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    scale_y_continuous(labels = scales::percent) +
+    scale_x_continuous(breaks=seq(1,51,1), labels = weeklabel$label) +
+    scale_fill_manual(name='Overall Sentiment', 
+                            values=c('negative'='red', 
+                                     'positive'='green')) 
+```
+
+We can also visualize the net sentiment on a week-by-week basis:
+
+```{r echo=FALSE}
+gdata <- tweets.sentiment %>%
+  arrange(day) %>%
+  group_by(week) %>%
+  summarize(net_sentiment=sum(sentiment)) %>%
+  mutate(color=ifelse(net_sentiment>0,"positive","negative"))
+# week index
+gdata$week2 <- gdata$week
+levels(gdata$week2) <- seq(1,51,1)
+gdata$week2 <- as.numeric(gdata$week2)
+# get labels for week based on date
+weeklabel <- tweets.nrc %>% 
+  arrange(day) %>%
+  group_by(week) %>%
+  mutate(label=first(day)) %>%
+  distinct(week, label)
+# plot it
+ggplot(gdata, aes(x=week2, y=net_sentiment, fill=color)) +
+  geom_bar(stat="identity", color="black") + 
+      scale_fill_manual(name='Net Sentiment', 
+                            values=c('positive'='darkgreen',
+                                     'negative'='red')) +
+   labs(y="Net Sentiment",x="Week", subtitle="Trump's tweets: net sentiment over time") +
+    ggtitle("What is the net sentiment of Trump tweets over time?") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    scale_x_continuous(breaks=seq(1,51,1), labels = weeklabel$label)   
+
+```
+
+In both of the above plots we can see that Trump tweets are usually more positive than negative, but the second plot (net sentiment) considers the total amount of net tweet sentiment, making it easier to identify his "bad weeks" over the past year (the weeks where "negative" words outnumbered "positive" words).
+
+
+## Understanding Drivers of Sentiment
+
+Now that we have classified Trump's tweets into "positive" and "negative" sentiment, we can take a closer look:
+
+```{r echo=FALSE}
+tweets.sentiment$Quartile <- NA
+tweets.sentiment$Quartile[tweets.sentiment$sentiment>=-125] <- "1st Quartile"
+tweets.sentiment$Quartile[tweets.sentiment$sentiment>=-8] <- "2nd Quartile"
+tweets.sentiment$Quartile[tweets.sentiment$sentiment>=4.5] <- "3rd Quartile"
+tweets.sentiment$Quartile[tweets.sentiment$sentiment>=14.5] <- "4th Quartile"
+#summary(tweets.sentiment$sentiment)
+ggplot(tweets.sentiment, aes(x=Quartile, y=sentiment, fill=Quartile)) +
+  geom_boxplot() +
+    labs(y="Net Sentiment per Tweet",x="Quartile", subtitle="Trump's tweets: net sentiment per quartile") +
+    ggtitle("How does the sentiment of Trump tweets break down?") 
+```
+
+If we break these tweets into quartiles based on sentiment, we see a clear distinction between the 1st quartile (most negative) and 4th quartile (most positive). Let us count the most common bigrams appearing in both groups. In other words, which words are found most often among the most positive, and most negative, Trump tweets?
+
+```{r echo=FALSE}
+# some custom stop words I've added
+data(stop_words)
+custom_stop_words <- data.frame(word=c('amp',
+                                    't.co',
+                                    'https',
+                                    'don’t',
+                                    'p.m',
+                                    'a.m',
+                                    'erik_paulsen',
+                                    'pm',
+                                    '00pme',
+                                    '0pwiwchgbh',
+                                    '2019',
+                                    '9'),lexicon='custom')
+stop_words <- rbind(custom_stop_words,stop_words)
+```
+
+```{r include=FALSE}
+# take the 20 top positive bigrams
+bigram.pos <- tweets.sentiment %>%
+  filter(Quartile=="4th Quartile") %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(lexicon) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 2) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+
+# take the 20 top negative bigrams
+bigram.neg <- tweets.sentiment %>%
+  filter(Quartile=="1st Quartile") %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(lexicon) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 2) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+#plot it
+p1 <- ggplot(bigram.pos, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#009933") +
+  labs(x="Bigram",y="Frequency",subtitle="Positive Tweets") +
+  coord_flip()
+
+p2 <- ggplot(bigram.neg, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#990000") +
+  labs(x="Bigram",y="Frequency",subtitle="Negative Tweets") +
+  coord_flip()
+
+grid.arrange(top = "Common Bigrams in Tweets with Extreme Sentiment", p1, p2, nrow = 1)
+```
+
+We can see above that "trade deals", "FLOTUS Melania" and "American people" are more likely to appear among positive tweets, while "Hillary Clinton", "James Comey" and "Mueller Report" are more likely to appear among the negative tweets. Interestingly, some bigrams, like "North Korea", "border security", and "Nancy Pelosi" appear on both lists. 
+
+In many cases we find NLP to be an iterative process. For example, now that we know Trump has a strong negative emotion in regards to the Mueller report, we can dig deeper into those tweets that contain the word "mueller" (we find 83 of them).
+
+```{r include=FALSE}
+# find tweets that mention Mueller
+tweets.mueller <- tweets.sentiment %>%
+  select(text, id_str) %>%
+  unnest_tokens(word, text) %>%
+  filter(word=="mueller") %>%
+  group_by(id_str) %>%
+  select(id_str)
+  # merge back the other features we care about
+  tweets.mueller <- merge(tweets.mueller, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str")
+```
+
+We can use the NRC lexicon once again to dig deeper into the emotions of these tweets about Mueller. 
+
+```{r include=FALSE}
+tweets.mueller <- tweets.mueller %>%
+  select(id_str, day, hour, text) %>%
+  # tokenize by word and join nrc lexicon
+  unnest_tokens(word, text) %>%
+  inner_join(nrc)  %>%
+  # ignore positive and negative sentiment
+  filter(sentiment!='positive') %>%
+  filter(sentiment!='negative') %>%
+  # create dummy variables for each emotion
+  mutate(sent_anger=ifelse(sentiment=='anger',1,0)) %>%
+  mutate(sent_anticipation=ifelse(sentiment=='anticipation',1,0)) %>%  
+  mutate(sent_disgust=ifelse(sentiment=='disgust',1,0)) %>%  
+  mutate(sent_fear=ifelse(sentiment=='fear',1,0)) %>%
+  mutate(sent_joy=ifelse(sentiment=='joy',1,0)) %>%
+  mutate(sent_sadness=ifelse(sentiment=='sadness',1,0)) %>%
+  mutate(sent_surprise=ifelse(sentiment=='surprise',1,0)) %>%  
+  mutate(sent_trust=ifelse(sentiment=='trust',1,0)) %>%
+  # group by tweet and sum sentiments
+  group_by(id_str) %>%
+  summarize(sent_anger=sum(sent_anger),
+            sent_anticipation=sum(sent_anticipation),
+            sent_disgust=sum(sent_disgust),
+            sent_fear=sum(sent_fear),
+            sent_joy=sum(sent_joy),
+            sent_sadness=sum(sent_sadness),
+            sent_surprise=sum(sent_surprise),
+            sent_trust=sum(sent_trust))
+  # merge back the other features we care about
+  tweets.mueller <- merge(tweets.mueller, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str") 
+```
+
+```{r echo=FALSE}
+gdata <- data.frame(emotion='anger', 
+                    proportion=nrow(subset(tweets.mueller, sent_anger>0))/nrow(tweets.mueller))
+gdata <- rbind(gdata, data.frame(emotion='anticipation', 
+                                 proportion=nrow(subset(tweets.mueller, sent_anticipation>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='disgust', 
+                                 proportion=nrow(subset(tweets.mueller, sent_disgust>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='fear', 
+                                 proportion=nrow(subset(tweets.mueller, sent_fear>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='joy', 
+                                 proportion=nrow(subset(tweets.mueller, sent_joy>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='sadness', 
+                                 proportion=nrow(subset(tweets.mueller, sent_sadness>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='surprise', 
+                                 proportion=nrow(subset(tweets.mueller, sent_surprise>0))/nrow(tweets.mueller)))
+gdata <- rbind(gdata, data.frame(emotion='trust', 
+                                 proportion=nrow(subset(tweets.mueller, sent_trust>0))/nrow(tweets.mueller)))
+ggplot(gdata, aes(x=emotion, y=proportion, fill=emotion)) +
+  geom_bar(stat="identity", color="black") +
+  labs(y="Proportion of Tweets",x="Emotion (NRC Lexicon)", subtitle="Proportion of tweets that match each emotion") +
+    ggtitle("What are the most common emotions in Trump's tweets about Mueller?") +
+    theme(legend.position = "none") +
+    scale_y_continuous(labels = scales::percent)
+```
+
+Among this subset we find 86% of tweets correspond to "anger" and "fear", 81% correspond to "disgust", and 75% to "sadness", with very little "joy" or "surprise". Aside from an oddly high "trust", this passes a sanity check. 
+
+We can look closer, finding the top 20 bigrams in this subset (not including the word "Mueller"):
+
+```{r include=FALSE}
+bigrams <- tweets.mueller %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(data.frame(word=c("mueller","17","13"))) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by bigram index
+  filter(n() == 2) %>%    # keep 2 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+ggplot(bigrams, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#990000") +
+  ggtitle("Which bigrams does Trump include when tweeting about Mueller?") +
+  labs(x="Bigram",y="Frequency",subtitle="Frequency of common bigrams in subset") +
+  coord_flip()
+```
+ 
+We see phrases like "witch hunt", "angry Democrats", "fake news" and "crooked Hillary" rise to the top of the list, which again passes a sanity check. These are the things Trump is likely to talk about when discussing "Mueller" on Twitter. 
+
+Instead of using net sentiment, we might focus on a specific emotion from the NRC lexicon, for example: fear.
+
+```{r echo=FALSE}
+#summary(tweets.nrc$sent_fear)
+tweets.fear <- tweets.nrc
+tweets.fear$Quartile <- NA
+tweets.fear$Quartile[tweets.fear$sent_fear==0] <- "1st Quartile"
+tweets.fear$Quartile[tweets.fear$sent_fear==1] <- "2nd Quartile"
+tweets.fear$Quartile[tweets.fear$sent_fear==2] <- "3rd Quartile"
+tweets.fear$Quartile[tweets.fear$sent_fear>2] <- "4th Quartile"
+ggplot(tweets.fear, aes(x=Quartile, y=sent_fear, fill=Quartile)) +
+  geom_boxplot() +
+    labs(y="Fear per Tweet",x="Quartile", subtitle="Trump's tweets: fear per quartile") +
+    ggtitle("What is Trump afraid of?") 
+```
+
+Which bigrams appear most commonly in the 4th Quartile? That is, what are the things Trump fears the most?
+
+```{r include=FALSE}
+# take the 20 top bigrams
+bigrams <- tweets.fear %>%
+  filter(Quartile=="4th Quartile") %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 2) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+ggplot(bigrams, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#990000") +
+  ggtitle("What is Trump afraid of?") +
+  labs(x="Bigram",y="Frequency",subtitle="Frequency of common bigrams in subset") +
+  coord_flip()
+```
+
+Here we find "witch hunt", "fake news", and oddly, "Trump campaign". And although it may be tempting to claim Trump fears a "Russian witch", this is just a result of our bigram splitting the phrase "Russian witch hunt" into two pieces. 
+
+
+```{r include=FALSE}
+# take the 20 top bigrams
+bigrams <- tweets.fear %>%
+  filter(Quartile=="4th Quartile") %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 3) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 3) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+ggplot(bigrams, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#990000") +
+  ggtitle("What is Trump afraid of?") +
+  labs(x="Trigram",y="Frequency",subtitle="Frequency of common trigrams in subset") +
+  coord_flip()
+```
+
+Now that we have a better understanding of what Trump fears, what brings him joy? We can repeat the process as before, looking only at the 4th quartile, tweets with the highest "joy" sentiment. 
+
+
+```{r include=FALSE}
+#summary(tweets.nrc$sent_joy)
+tweets.joy <- tweets.nrc %>% filter(sent_joy >= 1)
+
+# take the 20 top bigrams
+bigrams <- tweets.joy %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 3) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 3) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+ggplot(bigrams, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#528e67") +
+  ggtitle("What brings Trump joy?") +
+  labs(x="Trigram",y="Frequency",subtitle="Frequency of common trigrams in subset") +
+  coord_flip()
+```
+
+Oddly we find "fake news media", "rigged witch hunt" and "crooked Hillary Clinton" are among the most common trigrams among the tweets with the highest "joy" sentiment. Should we assume Trump takes joy in criticizing Hillary Clinton and the media? Or is it possible our sentiment lexicon is failing to classify as well as it could? 
+
+
+## Using Sentimentr
+
+Until now, we have been establishing sentiment on a word-by-word basis. The [sentimentr package](https://cran.r-project.org/web/packages/sentimentr/index.html) in R offers a different approach. Unlike our word-based method, sentimentr considers valence shifters. Consider these two examples: 
+
+> I don't like it.
+
+> I really like it.
+
+Both of these sentences include the word "like".
+
+```{r echo=FALSE}
+kable(subset(lexicon, word=="like"))
+```
+
+This word appears in two of our sentiment lexicons, with a total sentiment score of 4.5. However, reading this as a human, we can see that both "I don't like it" and "I really like it" have *opposite* sentiments. In this case, the words "don't" and "really" are more important in determining the true sentiment. In this case, "don't" and "really" are our valence shifters, which sentimentr considers on a sentence-by-sentence basis. 
+
+```{r include=FALSE}
+sentiment=sentiment_by(tweets$text)
+tweets.compare <- tweets
+tweets.compare$sentimentr=sentiment$ave_sentiment
+tweets.sentiment2 <- tweets.sentiment %>% select(id_str, sentiment)
+tweets.compare <- merge(tweets.compare, tweets.sentiment2, by="id_str", all=TRUE)
+tweets.compare <- tweets.compare %>% select(id_str, text, sentimentr, sentiment)
+
+# look at cases where we flip signs
+flipped <- subset(tweets.compare, tweets.compare$sentimentr*tweets.compare$sentiment < 0)
+flipped$diff <- flipped$sentimentr-flipped$sentiment
+```
+
+Since both methods score sentiment on different scales, let us first consider cases where these methods disagree. 
+
+Consider the following tweets: 
+
+```{r echo=FALSE}
+tweet <- tweets.compare[which(tweets.compare$id_str=="991267863674675200"),]
+print(tweet$text)
+```
+
+Our lexicon method scored this tweet -48 (negative), while sentimentr gave it a score near 0 (neutral). Even a human reader may struggle with the sentiment of the above tweet. 
+
+```{r echo=FALSE}
+tweet <- tweets.compare[which(tweets.compare$id_str=="990202926114189312"),]
+print(tweet$text)
+```
+
+Our lexicon method scored this tweet 39.5 (positive), while sentimentr gave it a score near 0 (neutral). In this case it would appear sentimentr has considered phrases such as "will not stand" and "his reputation has been shattered" to mitigate the positive sentiment of "great people" and "respect and admire".
+
+In order to better compare these two methods, we will standardize both sentiment scores into a z score, and then look at the difference between them. Under this standardized scale, a score of 0 corresponds to the average sentiment, with negative numbers being more "negative"" than average, and positive numbers being more "positive" than average. 
+
+```{r echo=FALSE}
+# standardize to z score
+tweets.compare$sentiment <- (tweets.compare$sentiment-mean(tweets.compare$sentiment, na.rm=TRUE))/sd(tweets.compare$sentiment, na.rm=TRUE) 
+tweets.compare$sentimentr <- (tweets.compare$sentimentr-mean(tweets.compare$sentimentr))/sd(tweets.compare$sentimentr)   
+tweets.compare$diff <- tweets.compare$sentimentr-tweets.compare$sentiment
+kable(head(subset(tweets.compare, select=c(id_str, sentimentr, sentiment, diff))))
+
+# look at cases where we flip signs
+flipped <- subset(tweets.compare, tweets.compare$sentimentr*tweets.compare$sentiment < 0)
+```
+
+
+Consider the following tweets: 
+
+```{r echo=FALSE}
+tweet <- tweets.compare[which(tweets.compare$id_str=="1076658521926656000"),]
+print(tweet$text)
+```
+
+The standardized lexicon method scored this 1.23 (above average), while sentimentr scored this -1.1 (below average). Unlike the lexicon method, sentimentr balances the positivity of "bring our troops back home (happy & healthy)" with "hit hard instead by the Fake News Media".
+
+```{r echo=FALSE}
+tweet <- tweets.compare[which(tweets.compare$id_str=="1024263146008207360"),]
+print(tweet$text)
+```
+
+The standardized lexicon method scored this -1.71 (below average), while sentimentr scored this 1.15 (above average). Which sentiment do you agree with?
+
+```{r echo=FALSE}
+tweet <- tweets.compare[which(tweets.compare$id_str=="1105445788585467904"),]
+print(tweet$text)
+```
+
+The standardized lexicon method scored this -1.68 (below average), while sentimentr scored this 1.26 (above average). Sentimentr thinks Trump was expressing a positive sentiment here, which makes sense if we assume the denial of climate change is a positive thing for Trump's agenda. 
+
+If we look at the common bigrams in our 1st quartile versus our 4th quartile based on sentimentr score, we end up with something similar to what we saw before. 
+
+```{r include=FALSE}
+# take the 20 top positive bigrams
+bigram.pos <- tweets.compare %>%
+  filter(sentimentr >= 0.64015) %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(lexicon) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 2) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+
+# take the 20 top negative bigrams
+bigram.neg <- tweets.compare %>%
+  filter(sentimentr <= -0.60779) %>%
+  select(text, id_str) %>%
+  unnest_tokens(bigram, text, 'ngrams', n = 2) %>%
+  mutate(i = row_number()) %>%    # add index for later grouping
+  unnest_tokens(word, bigram, drop = FALSE) %>%
+  anti_join(lexicon) %>%
+  anti_join(stop_words) %>%
+  group_by(i) %>%    # group by trigram index
+  filter(n() == 2) %>%    # keep 3 words only
+  summarise(bigram = unique(bigram)) %>% 
+  count(bigram, sort = TRUE) %>%
+  head(20)
+```
+
+```{r echo=FALSE}
+#plot it
+p1 <- ggplot(bigram.pos, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#009933") +
+  labs(x="Bigram",y="Frequency",subtitle="Positive Tweets") +
+  coord_flip()
+
+p2 <- ggplot(bigram.neg, aes(x=reorder(bigram, n),y=n)) +
+  geom_bar(stat="identity", fill="#990000") +
+  labs(x="Bigram",y="Frequency",subtitle="Negative Tweets") +
+  coord_flip()
+
+grid.arrange(top = "Common Bigrams in Tweets with Extreme Sentimentr Scores", p1, p2, nrow = 1)
+```
+
+There are a few small changes from using sentimentr. We find "southern border", "South Carolina", "oval office", "American History", and "African American" all join the positive list. Meanwhile "mainstream media", "Chuck Schumer", "American people" and "9th circuit" all join the negative list.  
+
+Although the value of including valence shifters may not be immediately obvious in the above examples, looking at the big picture, we can usually expect a more reasonable sentiment score by considering them. Consider these examples:
+
+```{r include=FALSE}
+sample <- data.frame(id=c(1,2,3,4), text=c("I love Trump.", "I don't love Trump.","I hate Trump.", "I don't hate Trump."))
+sample$text <- as.character(sample$text)
+last.example <- sentiment_by(sample$text)
+sample$sentimentr_score <- last.example$ave_sentiment
+tmp <- sample %>%
+  unnest_tokens(word, text) %>%
+  inner_join(lexicon) %>%
+  group_by(id) %>%
+  summarize(sentiment_score=sum(sentiment, na.rm=TRUE))
+sample$lexicon_score <- tmp$sentiment_score
+```
+```{r echo=FALSE}
+kable(sample)
+```
+
+Our lexicon method fails to see the difference between these sentences; sentimentr understands context that a word-based dictionary match never will.
+
+
+## Conclusion 
+
+As with all forms of unsupervised learning, when it comes to using natural language processing to extract sentiment, there is no official "right answer". Ultimately it comes down to the judgement and experience of the people assigned to the project. To any project manager, or researcher trying to replicate results, this can be equal parts frustrating and exiliarating. There is a lot of fun to be had at the edge of theory and application. 
+
+Despite these limitations, sentiment analysis is a critical skill for anyone working with NLP. The tidytext package in R, and sentimentr package, make it super easy to get a working prototype together in a few hours. Help yourself to our code, and have fun psychoanalyzing the President's tweets for yourself. 
+
+
+## Shameless Plug
+
+Are you a Data Analyst, Data Scientist, Data Engineer, Machine Learning Engineer or Machine Learning Researcher looking to advance your career? [Check out DataJenius today](https://datajenius.com). We search through millions of listings on Indeed, Monster, ZipRecruiter and other job sites to find those most relevant to data professionals. Not sure where you fit in this rapidly changing industry? Our self assessment will help match your skills to the job roles most suited for you. 
+
