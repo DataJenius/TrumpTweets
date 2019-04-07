@@ -15,22 +15,22 @@ p_load(dplyr, ggplot2, gridExtra, knitr, scales, sentimentr, stringi, tidyverse,
 ```
 
 # Sentiment Analysis with Trump Tweets
-<div class="date">April 7th, 2019</div>
-<div class="author">Josh Pause, Machine Learning Engineer, DataJenius</div>
-
+<div class="byline">Published by Josh Pause @[DataJenius](https://datajenius.com) on April 7th, 2019</div>
+<!-- <img class="mainpic" src="/articles/sentiment-analysis-with-trump-tweets/img1_trump.jpg"> -->
+<div class="caption">Pictured above: the President hard at work</div>
 
 ## Introduction
 
-In this article we will be using R, including the tidytext and sentimentr packages, to do some natural language processing and sentiment analysis of Trump's tweets. All of the code and data used in the creation of this article is available via our Github depository.
+In this article we will be using R, including the tidytext and sentimentr packages, to do some natural language processing and sentiment analysis of Trump's tweets. [All of the code and data used in the creation of this article is available via our Github depository](https://github.com/DataJenius/TrumpTweets).
 
 
 ## Our Data
 
 We took the last year of Trump's tweets from the [Trump Twitter Archive](http://trumptwitterarchive.com/), from April 6th, 2018 through the evening of April 5th, 2019. This data includes 3,089 total tweets; we looked at original tweets only, and ignored his retweets. 
 
-It goes without saying that we encounter all sorts of strange characters on Twitter. More specifically, we encounter emojis, foreign languages, and lots of UTF-8 characters that can choke a standard NLP preprocessor. Most of these NLP systems are designed to work with ASCII content, which is limitted to standard English letters, numbers, and punctuation found on a standard American keyboard. When these systems encounter UTF-8 this can result in garbled punctuation appearing in your text, or a system failing to tokenize or lemmatize properly. To avoid this, we converted all tweet text to ASCII. I will refer you to [Apil Tamong's article on the subject](https://medium.com/@apiltamang/unicode-utf-8-and-ascii-encodings-made-easy-5bfbe3a1c45a) for more information regarding UTF-8 versus ASCII. 
+It goes without saying that we encounter all sorts of strange characters on Twitter. More specifically, we encounter emojis, foreign languages, and lots of UTF-8 characters that can choke a standard NLP preprocessor. Most of these NLP systems are designed to work with ASCII content, which is limited to standard English letters, numbers, and punctuation found on a standard American keyboard. When these systems encounter UTF-8 this can result in garbled punctuation appearing in your text, or a system failing to tokenize or lemmatize properly. To avoid this, we converted all tweet text to ASCII. I will refer you to [Apil Tamong's article on the subject](https://medium.com/@apiltamang/unicode-utf-8-and-ascii-encodings-made-easy-5bfbe3a1c45a) for more information regarding UTF-8 versus ASCII. 
 
-It is also important to note that the "created_at" timestamp provided by Twitter is set in UTC time. Since Trump spends most of his time in New York, Washington D.C. and Florida, we converted all dates and times to the Eastern timezone instead. 
+It is also important to note that the "created_at" timestamp provided by Twitter is set in UTC time. Since Trump spends most of his time in New York, Washington D.C. and Florida, we converted all dates and times to the Eastern time zone instead. 
 
 ```{r echo=FALSE, results='hide'}
 # load our tweets from UTF-8 encoded CSV file (allows emojis)
@@ -102,9 +102,9 @@ Looking at the above plot we can immediately get a feel for the President's rout
 nrow(subset(tweets, source=='Twitter for iPhone', select=c("source")))/nrow(tweets)
 ```
 
-The gross majority of these tweets (more than 98%) were posted using "Twitter for iPhone". This is not to say all of these tweets are actually written by Trump himself. It is quite possible there are social media or public relations staff handling some of these posts, but if they are, they are also using iPhones to do it most of the time. 
+The gross majority of these tweets (more than 98%) were posted using "Twitter for iPhone". This is not to say all of these tweets are actually written by Trump himself. It is quite possible there are social media or public relations staff handling some of these posts, but if they are, they are also using iPhones most of the time. 
 
-There is an incredible amount of variance in the amount of retweets a given post by Trump receives. The least popular tweet in our data got a mere 6 retweets: 
+There is an incredible amount of variance in the amount of retweets a post by Trump receives. The least popular tweet in our data got a mere 6 retweets: 
 
 ```{r echo=FALSE}
 tweet <- tweets[which(tweets$retweet_count==min(tweets$retweet_count)),]
@@ -130,7 +130,7 @@ tweets %>%
     scale_x_continuous(label=comma)
 ```
 
-We don't have time to read through all of these tweets manually, but that is where the real "meat and potatoes" of this data is hiding. How can we use natural language processing, and more specifically, sentiment analysis, to dig deeper?
+We don't have time to read through all of these tweets manually, but this is where the real "meat and potatoes" of the data is hiding. How can we use natural language processing, and more specifically, sentiment analysis, to dig deeper?
 
 ## The NRC Lexicon
 
@@ -243,7 +243,7 @@ ggplot(gdata, aes(x=emotion, y=proportion, fill=emotion)) +
     scale_y_continuous(labels = scales::percent)
 ```
 
-We find that roughly 82% of Trump's tweets contain at least one word matching "trust", followed by 63% which are associated to "anticipation", followed by 57% which are associated with "fear". Only 40% of Trump's tweet contain at least one word matching to "disgust". Remember: this can be deceptive because the same word (e.g. "deal") can be associated to multiple emotional categories. 
+We find that roughly 82% of Trump's tweets contain at least one word matching "trust", followed by 63% which are associated with "anticipation", followed by 57% which are associated with "fear". Only 40% of Trump's tweet contain at least one word matching to "disgust". Remember: this can be deceptive because the same word (e.g. "deal") can be associated to multiple emotional categories. 
 
 If we add up all emotional word matches, and look at the proportion of these matches in each emotional category, we can visualize Trump's changing mood over time: 
 
@@ -332,7 +332,9 @@ lexicon <- lexicon %>% mutate(sentiment=nrc+afinn+bing+loughran)
 kable(head(lexicon))
 ```
 
-Words that appear in more lexicons have a stronger influence on our final sentiment score, which reduces all emotion into a simplified "positive" or "negative" number. As before we can tokenize all tweets by word. This time we will score the sentiment of each individual word using the combined lexicon, and sum this to the net sentiment per tweet. In other words, does a given tweet have more positive or negative sentiment in it?
+Words that appear in more lexicons have a stronger influence on our final sentiment score, which reduces all emotion into a simplified "positive" or "negative" number. As before, we can tokenize all tweets by word. This time we will score the sentiment of each individual word using the combined lexicon, and sum this to the net sentiment per tweet. 
+
+In other words, does a given tweet have more positive or negative sentiment in it?
 
 ```{r include=FALSE}
 tweets.sentiment <- tweets %>%
@@ -347,7 +349,7 @@ tweets.sentiment <- tweets %>%
   tweets.sentiment <- merge(tweets.sentiment, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str") 
 ```
 
-If we ignore the long tails (the tweets with extremely negative or positive sentiment), we find an approximately normal distribition, centered around a net sentiment near 5. 
+If we ignore the long tails (the tweets with extremely negative or positive sentiment), we find an approximately normal distribution, centered around a net sentiment near 5. 
 
 ```{r echo=FALSE}
 tweets.sentiment %>%
@@ -430,7 +432,7 @@ In both of the above plots we can see that Trump tweets are usually more positiv
 
 ## Understanding Drivers of Sentiment
 
-Now that we have classified Trump's tweets into "positive" and "negative" sentiment, we can take a closer look:
+Now that we have classified Trump's tweets into "positive" and "negative" sentiment, we can take a closer look, and see where this sentiment is coming from. 
 
 ```{r echo=FALSE}
 tweets.sentiment$Quartile <- NA
@@ -445,7 +447,7 @@ ggplot(tweets.sentiment, aes(x=Quartile, y=sentiment, fill=Quartile)) +
     ggtitle("How does the sentiment of Trump tweets break down?") 
 ```
 
-If we break these tweets into quartiles based on sentiment, we see a clear distinction between the 1st quartile (most negative) and 4th quartile (most positive). Let us count the most common bigrams appearing in both groups. In other words, which words are found most often among the most positive, and most negative, Trump tweets?
+If we break these tweets into quartiles based on net sentiment, we see a clear distinction between the 1st quartile (most negative) and 4th quartile (most positive). Let us count the most common bigrams appearing in both groups. In other words, which words are found most often among the most positive, and most negative, Trump tweets?
 
 ```{r echo=FALSE}
 # some custom stop words I've added
@@ -528,7 +530,7 @@ tweets.mueller <- tweets.sentiment %>%
   tweets.mueller <- merge(tweets.mueller, tweets[, c("id_str", "text", "week", "day", "hour")], by="id_str")
 ```
 
-We can use the NRC lexicon once again to dig deeper into the emotions of these tweets about Mueller. 
+We can use the NRC lexicon to look at the specific emotions of these tweets about Mueller. 
 
 ```{r include=FALSE}
 tweets.mueller <- tweets.mueller %>%
@@ -587,7 +589,7 @@ ggplot(gdata, aes(x=emotion, y=proportion, fill=emotion)) +
     scale_y_continuous(labels = scales::percent)
 ```
 
-Among this subset we find 86% of tweets correspond to "anger" and "fear", 81% correspond to "disgust", and 75% to "sadness", with very little "joy" or "surprise". Aside from an oddly high "trust", this passes a sanity check. 
+Among this subset we find 86% of tweets correspond to "anger" and "fear", 81% correspond to "disgust", and 75% to "sadness", with very little "joy" or "surprise". This passes a sanity check.
 
 We can look closer, finding the top 20 bigrams in this subset (not including the word "Mueller"):
 
@@ -616,7 +618,7 @@ ggplot(bigrams, aes(x=reorder(bigram, n),y=n)) +
  
 We see phrases like "witch hunt", "angry Democrats", "fake news" and "crooked Hillary" rise to the top of the list, which again passes a sanity check. These are the things Trump is likely to talk about when discussing "Mueller" on Twitter. 
 
-Instead of using net sentiment, we might focus on a specific emotion from the NRC lexicon, for example: fear.
+Instead of subsetting tweets based on net sentiment, or a specific keyword, we might focus on a specific emotion from the NRC lexicon. For example: fear.
 
 ```{r echo=FALSE}
 #summary(tweets.nrc$sent_fear)
@@ -632,7 +634,9 @@ ggplot(tweets.fear, aes(x=Quartile, y=sent_fear, fill=Quartile)) +
     ggtitle("What is Trump afraid of?") 
 ```
 
-Which bigrams appear most commonly in the 4th Quartile? That is, what are the things Trump fears the most?
+Which bigrams appear most commonly in the 4th Quartile? 
+
+That is, what are the things Trump fears the most?
 
 ```{r include=FALSE}
 # take the 20 top bigrams
@@ -719,7 +723,7 @@ Oddly we find "fake news media", "rigged witch hunt" and "crooked Hillary Clinto
 
 ## Using Sentimentr
 
-Until now, we have been establishing sentiment on a word-by-word basis. The [sentimentr package](https://cran.r-project.org/web/packages/sentimentr/index.html) in R offers a different approach. Unlike our word-based method, sentimentr considers valence shifters. Consider these two examples: 
+Until now, we have been determining sentiment on a word-by-word basis. The [sentimentr package](https://cran.r-project.org/web/packages/sentimentr/index.html) in R offers a different approach. Unlike our word-based lexicon methods, sentimentr considers valence shifters. Consider these two examples: 
 
 > I don't like it.
 
@@ -746,16 +750,15 @@ flipped <- subset(tweets.compare, tweets.compare$sentimentr*tweets.compare$senti
 flipped$diff <- flipped$sentimentr-flipped$sentiment
 ```
 
-Since both methods score sentiment on different scales, let us first consider cases where these methods disagree. 
 
-Consider the following tweets: 
+Consider the following tweets:
 
 ```{r echo=FALSE}
 tweet <- tweets.compare[which(tweets.compare$id_str=="991267863674675200"),]
 print(tweet$text)
 ```
 
-Our lexicon method scored this tweet -48 (negative), while sentimentr gave it a score near 0 (neutral). Even a human reader may struggle with the sentiment of the above tweet. 
+Our lexicon method scored this tweet -48 (negative), while sentimentr gave it a score near 0 (neutral). Even a human reader may struggle with the sentiment of the above tweet, given the generous amount of sarcasm it contains. 
 
 ```{r echo=FALSE}
 tweet <- tweets.compare[which(tweets.compare$id_str=="990202926114189312"),]
@@ -764,17 +767,14 @@ print(tweet$text)
 
 Our lexicon method scored this tweet 39.5 (positive), while sentimentr gave it a score near 0 (neutral). In this case it would appear sentimentr has considered phrases such as "will not stand" and "his reputation has been shattered" to mitigate the positive sentiment of "great people" and "respect and admire".
 
-In order to better compare these two methods, we will standardize both sentiment scores into a z score, and then look at the difference between them. Under this standardized scale, a score of 0 corresponds to the average sentiment, with negative numbers being more "negative"" than average, and positive numbers being more "positive" than average. 
+In order to better compare these two methods, we will standardize both sentiment scores into a z score, and then look at the difference between them. Under this standardized scale, a score of 0 corresponds to the average sentiment, negative numbers mean a tweet is more "negative" than average, and positive numbers mean a tweet is more "positive" than average. 
 
 ```{r echo=FALSE}
 # standardize to z score
-tweets.compare$sentiment <- (tweets.compare$sentiment-mean(tweets.compare$sentiment, na.rm=TRUE))/sd(tweets.compare$sentiment, na.rm=TRUE) 
+tweets.compare$lexicon <- (tweets.compare$sentiment-mean(tweets.compare$sentiment, na.rm=TRUE))/sd(tweets.compare$sentiment, na.rm=TRUE) 
 tweets.compare$sentimentr <- (tweets.compare$sentimentr-mean(tweets.compare$sentimentr))/sd(tweets.compare$sentimentr)   
-tweets.compare$diff <- tweets.compare$sentimentr-tweets.compare$sentiment
-kable(head(subset(tweets.compare, select=c(id_str, sentimentr, sentiment, diff))))
-
-# look at cases where we flip signs
-flipped <- subset(tweets.compare, tweets.compare$sentimentr*tweets.compare$sentiment < 0)
+tweets.compare$diff <- tweets.compare$sentimentr-tweets.compare$lexicon
+kable(head(subset(tweets.compare, select=c(id_str, sentimentr, lexicon, diff))))
 ```
 
 
@@ -852,32 +852,34 @@ grid.arrange(top = "Common Bigrams in Tweets with Extreme Sentimentr Scores", p1
 
 There are a few small changes from using sentimentr. We find "southern border", "South Carolina", "oval office", "American History", and "African American" all join the positive list. Meanwhile "mainstream media", "Chuck Schumer", "American people" and "9th circuit" all join the negative list.  
 
-Although the value of including valence shifters may not be immediately obvious in the above examples, looking at the big picture, we can usually expect a more reasonable sentiment score by considering them. Consider these examples:
+Although the value of including valence shifters may not be immediately obvious in the above examples, looking at the big picture, we can usually expect a more reasonable sentiment score by considering them. 
+
+Consider these examples:
 
 ```{r include=FALSE}
 sample <- data.frame(id=c(1,2,3,4), text=c("I love Trump.", "I don't love Trump.","I hate Trump.", "I don't hate Trump."))
 sample$text <- as.character(sample$text)
 last.example <- sentiment_by(sample$text)
-sample$sentimentr_score <- last.example$ave_sentiment
+sample$sentimentr <- last.example$ave_sentiment
 tmp <- sample %>%
   unnest_tokens(word, text) %>%
   inner_join(lexicon) %>%
   group_by(id) %>%
   summarize(sentiment_score=sum(sentiment, na.rm=TRUE))
-sample$lexicon_score <- tmp$sentiment_score
+sample$lexicon <- tmp$sentiment_score
 ```
 ```{r echo=FALSE}
 kable(sample)
 ```
 
-Our lexicon method fails to see the difference between these sentences; sentimentr understands context that a word-based dictionary match never will.
+Our lexicon method fails to see the difference between these sentences; sentimentr uses valence shifters to understand context in a way that no word-based method ever will.
 
 
 ## Conclusion 
 
-As with all forms of unsupervised learning, when it comes to using natural language processing to extract sentiment, there is no official "right answer". Ultimately it comes down to the judgement and experience of the people assigned to the project. To any project manager, or researcher trying to replicate results, this can be equal parts frustrating and exiliarating. There is a lot of fun to be had at the edge of theory and application. 
+As with all forms of unsupervised learning, when it comes to using natural language processing to extract sentiment, there is no official "right answer". Ultimately it comes down to the judgement and experience of the people assigned to the project. To any project manager, or researcher trying to replicate results, this can be equal parts frustrating and exhilarating.
 
-Despite these limitations, sentiment analysis is a critical skill for anyone working with NLP. The tidytext package in R, and sentimentr package, make it super easy to get a working prototype together in a few hours. Help yourself to our code, and have fun psychoanalyzing the President's tweets for yourself. 
+There is a lot of fun to be had at the border of theory and application. Sentiment analysis is a critical skill for anyone working with NLP. The tidytext package in R, and sentimentr package, make it super easy to get a working prototype together in a few minutes. [Help yourself to our code](https://github.com/DataJenius/TrumpTweets), and have fun psychoanalyzing the President's tweets for yourself. 
 
 
 ## Shameless Plug
